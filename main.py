@@ -31,7 +31,8 @@ class Renewer:
     current_csrf_token = None
     records_soup: BeautifulSoup = None
 
-    def __init__(self):
+    def __init__(self, auto_renew=False):
+        self.auto_renew = auto_renew
         self.session = requests.Session()
         self.session.headers.update(
             {
@@ -207,6 +208,14 @@ class Renewer:
         need_confirm = self.get_need_confirm_hosts()
         if len(need_confirm) > 0:
             host_name = self.get_host_name()
+            if not self.auto_renew:
+                print("⚠️ Need to confirm the following host(s):")
+                print(f"  - {host_name}")
+                choice = input("\nDo you want to confirm now (y/n)? ")
+                if choice.lower() != "y":
+                    print("❌ Confirmation skipped")
+                    return False
+
             print(f"⌛ Confirming: {host_name}")
             host_id = self.get_host_id()
             confirm_link = VERIFY_URL_TEMPLATE.substitute(id=host_id)
@@ -234,5 +243,8 @@ class Renewer:
 
 
 if __name__ == "__main__":
-    renewer = Renewer()
+    auto_renew = False
+    if len(sys.argv) > 1 and "--auto-renew" in sys.argv:
+        auto_renew = True
+    renewer = Renewer(auto_renew=auto_renew)
     sys.exit(int(renewer.renew()))
