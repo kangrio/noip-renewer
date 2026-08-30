@@ -1,6 +1,8 @@
 import os
 import sys
 import requests
+from urllib3.util.retry import Retry
+from requests.adapters import HTTPAdapter
 from bs4 import BeautifulSoup
 import re
 from pyotp import *
@@ -9,10 +11,12 @@ from dotenv import load_dotenv
 from string import Template
 
 load_dotenv()
+GITHUB_ACTION = os.getenv("GITHUB_ACTIONS") == "true"
 
 USERNAME = os.environ.get("NOIP_USERNAME")
 PASSWORD = os.environ.get("NOIP_PASSWORD")
 TOTP_SECRET = os.environ.get("NOIP_TOTP_SECRET")
+
 
 if not USERNAME or not PASSWORD or not TOTP_SECRET:
     print("❌ Error: NOIP_SERNAME and NOIP_PASSWORD and NOIP_TOTP_SECRET must be set")
@@ -34,11 +38,31 @@ class Renewer:
     def __init__(self, auto_renew=False):
         self.auto_renew = auto_renew
         self.session = requests.Session()
-        self.session.headers.update(
-            {
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
-            }
+    
+        self.session.headers.update({
+            "Accept": "*/*",
+            "Accept-Language": "en-US,en;q=0.9",
+            "User-Agent": (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/151.0.0.0 Safari/537.36"
+            ),
+        })
+    
+        retry = Retry(
+            total=3,
+            connect=3,
+            read=3,
+            backoff_factor=1,
+            status_forcelist=[429, 500, 502, 503, 504],
+            allowed_methods=["GET", "POST", "PUT", "DELETE"],
+            raise_on_status=False,
         )
+    
+        adapter = HTTPAdapter(max_retries=retry)
+    
+        self.session.mount("https://", adapter)
+        self.session.mount("http://", adapter)
 
     def get_2fa_code(self) -> str:
         return str(TOTP(TOTP_SECRET).now())
@@ -57,7 +81,6 @@ class Renewer:
             if not self.confirm():
                 return False
 
-            print("✅ Confirm sussessul")
             return True
         except requests.Timeout:
             print("❌ Request timed out")
@@ -78,7 +101,7 @@ class Renewer:
         self.records_soup = response = self.session.get(
             DNS_RECORD_URL,
             headers={"Referer": DASHBOARD_URL},
-            timeout=10,
+            timeout=30,
             allow_redirects=True,
         )
 
@@ -100,7 +123,7 @@ class Renewer:
         # 1. Get login page
         print(f"⌛ Logging in as {USERNAME} ...")
 
-        login_page = self.session.get(LOGIN_URL, timeout=10)
+        login_page = self.session.get(LOGIN_URL, timeout=30)
         login_page.raise_for_status()
         soup = BeautifulSoup(login_page.content, "html.parser")
         self.current_csrf_token = self.get_csrf_token(soup)
@@ -120,7 +143,7 @@ class Renewer:
             LOGIN_URL,
             data=payload,
             headers={"Referer": LOGIN_URL},
-            timeout=10,
+            timeout=30,
             allow_redirects=True,
         )
         response.raise_for_status()
@@ -149,7 +172,7 @@ class Renewer:
             VERIFY_URL,
             data=payload,
             headers={"Referer": VERIFY_URL},
-            timeout=10,
+            timeout=30,
             allow_redirects=True,
         )
         response.raise_for_status()
@@ -193,7 +216,7 @@ class Renewer:
         response = self.session.get(
             link,
             headers={"Referer": DNS_RECORD_URL, "HX-Request": "true"},
-            timeout=10,
+            timeout=30,
             allow_redirects=True,
         )
 
@@ -202,34 +225,40 @@ class Renewer:
         parsed = response.json()  # ✅ easiest way
         success = parsed.get("success")  # ✅ correct
 
+        if success:
+            print("✅ Confirm sussessul")
+
         return success
 
     def confirm(self) -> bool:
         need_confirm = self.get_need_confirm_hosts()
         if len(need_confirm) > 0:
             host_name = self.get_host_name()
+            host_display_name = "***" if github else host_name
+
             if not self.auto_renew:
                 print("⚠️ Need to confirm the following host(s):")
-                print(f"  - {host_name}")
+                print(f"  - {host_display_name}")
                 choice = input("\nDo you want to confirm now (y/n)? ")
+                print()
                 if choice.lower() != "y":
                     print("❌ Confirmation skipped")
                     return False
 
-            print(f"⌛ Confirming: {host_name}")
+            print(f"⌛ Confirming: {host_display_name}")
             host_id = self.get_host_id()
             confirm_link = VERIFY_URL_TEMPLATE.substitute(id=host_id)
             return self.confirm_with_link(confirm_link)
 
         print("✅ No need to confirm")
 
-        return False
+        return True
 
     def logout(self) -> bool:
         response = self.session.get(
             LOGOUT_URL,
             headers={"Referer": DASHBOARD_URL},
-            timeout=10,
+            timeout=30,
             allow_redirects=True,
         )
         response.raise_for_status()
@@ -247,4 +276,4 @@ if __name__ == "__main__":
     if len(sys.argv) > 1 and "--auto-renew" in sys.argv:
         auto_renew = True
     renewer = Renewer(auto_renew=auto_renew)
-    sys.exit(int(renewer.renew()))
+    sys.exit(0 if renewer.renew() else 1)
