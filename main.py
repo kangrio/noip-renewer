@@ -234,7 +234,7 @@ class Renewer:
         need_confirm = self.get_need_confirm_hosts()
         if len(need_confirm) > 0:
             host_name = self.get_host_name()
-            host_display_name = "***" if github else host_name
+            host_display_name = "***" if GITHUB_ACTION else host_name
 
             if not self.auto_renew:
                 print("⚠️ Need to confirm the following host(s):")
